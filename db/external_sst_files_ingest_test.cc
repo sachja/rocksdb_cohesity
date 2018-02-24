@@ -26,97 +26,11 @@ class ExternalSSTFileTest : public DBTestBase {
     env_->CreateDir(sst_files_dir_);
   }
 
-#if 0
-  Status GenerateAndAddExternalFile(
-      const Options options,
-      std::vector<std::pair<std::string, std::string>> data, int file_id = -1,
-      bool allow_global_seqno = false, bool sort_data = false,
-      std::map<std::string, std::string>* true_data = nullptr,
-      ColumnFamilyHandle* cfh = nullptr) {
-    // Generate a file id if not provided
-    if (file_id == -1) {
-      file_id = last_file_id_ + 1;
-      last_file_id_++;
+  void LimitOptions(Options& options, int num_levels = -1) {
+    if (options.num_levels < num_levels) {
+      options.num_levels = num_levels;
     }
-
-    // Sort data if asked to do so
-    if (sort_data) {
-      std::sort(data.begin(), data.end(),
-                [&](const std::pair<std::string, std::string>& e1,
-                    const std::pair<std::string, std::string>& e2) {
-                  return options.comparator->Compare(e1.first, e2.first) < 0;
-                });
-      auto uniq_iter = std::unique(
-          data.begin(), data.end(),
-          [&](const std::pair<std::string, std::string>& e1,
-              const std::pair<std::string, std::string>& e2) {
-            return options.comparator->Compare(e1.first, e2.first) == 0;
-          });
-      data.resize(uniq_iter - data.begin());
-    }
-    std::string file_path = sst_files_dir_ + ToString(file_id);
-    SstFileWriter sst_file_writer(EnvOptions(), options, cfh);
-
-    Status s = sst_file_writer.Open(file_path);
-    if (!s.ok()) {
-      return s;
-    }
-    for (auto& entry : data) {
-      s = sst_file_writer.Put(entry.first, entry.second);
-      if (!s.ok()) {
-        sst_file_writer.Finish();
-        return s;
-      }
-    }
-    s = sst_file_writer.Finish();
-
-    if (s.ok()) {
-      IngestExternalFileOptions ifo;
-      ifo.allow_global_seqno = allow_global_seqno;
-      if (cfh) {
-        s = db_->IngestExternalFile(cfh, {file_path}, ifo);
-      } else {
-        s = db_->IngestExternalFile({file_path}, ifo);
-      }
-    }
-
-    if (s.ok() && true_data) {
-      for (auto& entry : data) {
-        (*true_data)[entry.first] = entry.second;
-      }
-    }
-
-    return s;
   }
-
-  Status GenerateAndAddExternalFile(
-      const Options options, std::vector<std::pair<int, std::string>> data,
-      int file_id = -1, bool allow_global_seqno = false, bool sort_data = false,
-      std::map<std::string, std::string>* true_data = nullptr,
-      ColumnFamilyHandle* cfh = nullptr) {
-    std::vector<std::pair<std::string, std::string>> file_data;
-    for (auto& entry : data) {
-      file_data.emplace_back(Key(entry.first), entry.second);
-    }
-    return GenerateAndAddExternalFile(options, file_data, file_id,
-                                      allow_global_seqno, sort_data, true_data,
-                                      cfh);
-  }
-
-  Status GenerateAndAddExternalFile(
-      const Options options, std::vector<int> keys, int file_id = -1,
-      bool allow_global_seqno = false, bool sort_data = false,
-      std::map<std::string, std::string>* true_data = nullptr,
-      ColumnFamilyHandle* cfh = nullptr) {
-    std::vector<std::pair<std::string, std::string>> file_data;
-    for (auto& k : keys) {
-      file_data.emplace_back(Key(k), Key(k) + ToString(file_id));
-    }
-    return GenerateAndAddExternalFile(options, file_data, file_id,
-                                      allow_global_seqno, sort_data, true_data,
-                                      cfh);
-  }
-#endif
 
   Status DeprecatedAddFile(
       const std::vector<CustomIngSSTFileMetaData>* custom_ingest_metadata_vec,
@@ -130,6 +44,19 @@ class ExternalSSTFileTest : public DBTestBase {
     return db_->IngestExternalFile(no_files, opts, custom_ingest_metadata_vec);
   }
 
+  Status DeprecatedAddFile(
+      ColumnFamilyHandle* column_family,
+      const std::vector<CustomIngSSTFileMetaData>* custom_ingest_metadata_vec,
+      bool move_files = false) {
+    IngestExternalFileOptions opts;
+    opts.move_files = move_files;
+    opts.snapshot_consistency = false;
+    opts.allow_global_seqno = false;
+    opts.allow_blocking_flush = false;
+    std::vector<std::string> no_files;
+    return db_->IngestExternalFile(column_family, no_files, opts, custom_ingest_metadata_vec);
+  }
+
   ~ExternalSSTFileTest() { test::DestroyDir(env_, sst_files_dir_); }
 
  protected:
@@ -140,10 +67,14 @@ class ExternalSSTFileTest : public DBTestBase {
 TEST_F(ExternalSSTFileTest, Basic) {
   do {
     Options options = CurrentOptions();
+    if (options.num_levels < 2) {
+      options.num_levels = 2;
+    }
 
     SstFileWriter sst_file_writer(EnvOptions(), options);
 
-    // Current file size should be 0 after sst_file_writer init and before open a file.
+    // Current file size should be 0 after sst_file_writer init and before open
+    // a file.
     ASSERT_EQ(sst_file_writer.FileSize(), 0);
 
     // file1.sst (0 => 99)
@@ -246,7 +177,6 @@ TEST_F(ExternalSSTFileTest, Basic) {
 
       s = DeprecatedAddFile(&custom_ingest_metadata_vec, false);
       ASSERT_TRUE(s.ok()) << s.ToString();
-      ASSERT_EQ(db_->GetLatestSequenceNumber(), 0U);
       for (int k = 0; k < 100; k++) {
         ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
       }
@@ -266,7 +196,7 @@ TEST_F(ExternalSSTFileTest, Basic) {
 
       s = DeprecatedAddFile(&custom_ingest_metadata_vec, false);
       ASSERT_TRUE(s.ok()) << s.ToString();
-      // TODO This is not getting latest seqno
+      // TODO(venki): This is not getting latest seqno
       // ASSERT_EQ(db_->GetLatestSequenceNumber(), 0U);
       for (int k = 0; k < 200; k++) {
         ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
@@ -290,8 +220,6 @@ TEST_F(ExternalSSTFileTest, Basic) {
 
       s = DeprecatedAddFile(&custom_ingest_metadata_vec, false);
       ASSERT_TRUE(s.ok()) << s.ToString();
-      // TODO(venki): This is not getting latest seqno
-      // ASSERT_EQ(db_->GetLatestSequenceNumber(), 0U);
       for (int k = 0; k < 195; k++) {
         ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
       }
@@ -300,101 +228,290 @@ TEST_F(ExternalSSTFileTest, Basic) {
       }
     }
 
-#if 0
+    LimitOptions(options, 3);
     DestroyAndReopen(options);
-    // TODO(venki): This is not working right now.
-    // Add file1 using custom_ingest at non-zero level
+    // Add file1 and file2 using custom_ingest at level 1 and 2.
     {
       std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec;
       custom_ingest_metadata_vec.push_back(
-          CustomIngSSTFileMetaData(file1, 3, 0, 0));
+          CustomIngSSTFileMetaData(file1, 2, 0, 9));
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file2, 1, 10, 19));
 
       s = DeprecatedAddFile(&custom_ingest_metadata_vec, false);
       ASSERT_TRUE(s.ok()) << s.ToString();
-      ASSERT_EQ(db_->GetLatestSequenceNumber(), 0U);
-      for (int k = 0; k < 100; k++) {
+      for (int k = 0; k < 200; k++) {
         ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
       }
     }
-#endif
 
-// TODO(venki): sst files across levels with or without overlap is not working.
+    LimitOptions(options, 3);
+    DestroyAndReopen(options);
+    // Add file..3 with overlapping files in different levels.
+    {
+      std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec;
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file1, 2, 0, 0));
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file2, 1, 0, 0));
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file3, 0, 0, 0));
 
-#if 0
-    // Add file while holding a snapshot will fail
-    const Snapshot* s1 = db_->GetSnapshot();
-    if (s1 != nullptr) {
-      ASSERT_NOK(DeprecatedAddFile({file2}));
-      db_->ReleaseSnapshot(s1);
+      s = DeprecatedAddFile(&custom_ingest_metadata_vec, false);
+      ASSERT_TRUE(s.ok()) << s.ToString();
+      for (int k = 0; k < 195; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+      for (int k = 195; k < 300; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val_overlap");
+      }
+
+      // Delete keys in range (200 => 299)
+      for (int k = 200; k < 299; k++) {
+        ASSERT_OK(Delete(Key(k)));
+      }
+      std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec1;
+      custom_ingest_metadata_vec1.push_back(
+          CustomIngSSTFileMetaData(file3, 0, 0, 99));
+
+      // We deleted range (400 => 499) but cannot add file5 because
+      // of the range tombstones
+      ASSERT_NOK(DeprecatedAddFile(&custom_ingest_metadata_vec1, false));
+
+      // Compacting the DB will remove the tombstones
+      ASSERT_OK(db_->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+
+      // Now we can add the file
+      ASSERT_OK(DeprecatedAddFile(&custom_ingest_metadata_vec1, false));
+
+      // Verify values of file5 in DB
+      for (int k = 200; k < 299; k++) {
+        std::string value = Key(k) + "_val_overlap";
+        ASSERT_EQ(Get(Key(k)), value);
+      }
     }
-    // We can add the file after releaseing the snapshot
-    ASSERT_OK(DeprecatedAddFile({file2}));
 
-    ASSERT_EQ(db_->GetLatestSequenceNumber(), 0U);
-    for (int k = 0; k < 200; k++) {
-      ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
-    }
+    LimitOptions(options, 5);
+    DestroyAndReopen(options);
+    // Add file1..5 with same level and different level overlap.
+    {
+      std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec;
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file1, 0, 10, 19));
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file2, 1, 0, 0));
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file3, 2, 0, 0));
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file4, 0, 20, 29));
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file5, 4, 0, 0));
 
-    // This file has overlapping values with the existing data
-    s = DeprecatedAddFile({file3});
-    ASSERT_FALSE(s.ok()) << s.ToString();
+      s = DeprecatedAddFile(&custom_ingest_metadata_vec, false);
+      ASSERT_TRUE(s.ok()) << s.ToString();
+      for (int k = 0; k < 30; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+      for (int k = 30; k < 40; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val_overlap");
+      }
+      for (int k = 40; k < 200; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+      for (int k = 200; k < 300; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val_overlap");
+      }
+      for (int k = 400; k < 499; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
 
-    // This file has overlapping values with the existing data
-    s = DeprecatedAddFile({file4});
-    ASSERT_FALSE(s.ok()) << s.ToString();
-
-    // Overwrite values of keys divisible by 5
-    for (int k = 0; k < 200; k += 5) {
-      ASSERT_OK(Put(Key(k), Key(k) + "_val_new"));
-    }
-    ASSERT_NE(db_->GetLatestSequenceNumber(), 0U);
-
-    // Key range of file5 (400 => 499) dont overlap with any keys in DB
-    ASSERT_OK(DeprecatedAddFile({file5}));
-
-    // Make sure values are correct before and after flush/compaction
-    for (int i = 0; i < 2; i++) {
-      for (int k = 0; k < 200; k++) {
-        std::string value = Key(k) + "_val";
+      // Overwrite values of keys divisible by 5 and verify the range.
+      for (int k = 40; k < 200; k += 5) {
+        ASSERT_OK(Put(Key(k), Key(k) + "_val_new"));
+      }
+      for (int k = 40; k < 200; k++) {
         if (k % 5 == 0) {
-          value += "_new";
+          ASSERT_EQ(Get(Key(k)), Key(k) + "_val_new");
+        } else {
+          ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
         }
-        ASSERT_EQ(Get(Key(k)), value);
       }
-      for (int k = 400; k < 500; k++) {
-        std::string value = Key(k) + "_val";
-        ASSERT_EQ(Get(Key(k)), value);
+    }
+
+    LimitOptions(options, 5);
+    DestroyAndReopen(options);
+    // Add file1..5 with same level and different level overlap, across multiple
+    // ingest calls.
+    {
+      std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec1;
+      custom_ingest_metadata_vec1.push_back(
+          CustomIngSSTFileMetaData(file1, 2, 10, 19));
+      custom_ingest_metadata_vec1.push_back(
+          CustomIngSSTFileMetaData(file2, 1, 0, 0));
+      std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec2;
+      custom_ingest_metadata_vec2.push_back(
+          CustomIngSSTFileMetaData(file3, 2, 0, 0));
+      custom_ingest_metadata_vec2.push_back(
+          CustomIngSSTFileMetaData(file4, 0, 20, 29));
+      std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec3;
+      custom_ingest_metadata_vec3.push_back(
+          CustomIngSSTFileMetaData(file5, 4, 0, 0));
+
+      s = DeprecatedAddFile(&custom_ingest_metadata_vec1, false);
+      ASSERT_TRUE(s.ok()) << s.ToString();
+      s = DeprecatedAddFile(&custom_ingest_metadata_vec2, false);
+      ASSERT_TRUE(s.ok()) << s.ToString();
+      s = DeprecatedAddFile(&custom_ingest_metadata_vec3, false);
+      ASSERT_TRUE(s.ok()) << s.ToString();
+
+      for (int k = 0; k < 30; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
       }
+      for (int k = 30; k < 40; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val_overlap");
+      }
+      for (int k = 40; k < 200; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+      for (int k = 200; k < 300; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val_overlap");
+      }
+      for (int k = 400; k < 499; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+    }
+
+    LimitOptions(options, 3);
+    DestroyAndReopen(options);
+    // Add file1,2,5 qnd test compaction.
+    // TODO(venki): Compaction of overlapping ranges is not using file seq
+    // number. We will need ssts where keys have seq number to test that.
+    {
+      std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec;
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file1, 0, 10, 19));
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file2, 1, 0, 0));
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(file5, 2, 0, 0));
+
+      s = DeprecatedAddFile(&custom_ingest_metadata_vec, false);
+      ASSERT_TRUE(s.ok()) << s.ToString();
+      for (int k = 0; k < 200; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+      for (int k = 400; k < 499; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+
       ASSERT_OK(Flush());
       ASSERT_OK(db_->CompactRange(CompactRangeOptions(), nullptr, nullptr));
+      for (int k = 0; k < 200; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+      for (int k = 400; k < 499; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+
+      Close();
+      options.disable_auto_compactions = true;
+      Reopen(options);
+      for (int k = 0; k < 200; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+      for (int k = 400; k < 499; k++) {
+        ASSERT_EQ(Get(Key(k)), Key(k) + "_val");
+      }
+
     }
 
-    Close();
-    options.disable_auto_compactions = true;
-    Reopen(options);
-
-    // Delete keys in range (400 => 499)
-    for (int k = 400; k < 500; k++) {
-      ASSERT_OK(Delete(Key(k)));
-    }
-    // We deleted range (400 => 499) but cannot add file5 because
-    // of the range tombstones
-    ASSERT_NOK(DeprecatedAddFile({file5}));
-
-    // Compacting the DB will remove the tombstones
-    ASSERT_OK(db_->CompactRange(CompactRangeOptions(), nullptr, nullptr));
-
-    // Now we can add the file
-    ASSERT_OK(DeprecatedAddFile({file5}));
-
-    // Verify values of file5 in DB
-    for (int k = 400; k < 500; k++) {
-      std::string value = Key(k) + "_val";
-      ASSERT_EQ(Get(Key(k)), value);
-    }
-#endif
     DestroyAndRecreateExternalSSTFilesDir();
   } while (ChangeOptions(kSkipPlainTable | kSkipFIFOCompaction));
+}
+
+TEST_F(ExternalSSTFileTest, FileWithCFInfo) {
+  Options options = CurrentOptions();
+  CreateAndReopenWithCF({"koko", "toto"}, options);
+
+  SstFileWriter sfw_default(EnvOptions(), options, handles_[0]);
+  SstFileWriter sfw_cf1(EnvOptions(), options, handles_[1]);
+  SstFileWriter sfw_cf2(EnvOptions(), options, handles_[2]);
+  SstFileWriter sfw_unknown(EnvOptions(), options);
+
+  // default_cf.sst
+  const std::string cf_default_sst = sst_files_dir_ + "/default_cf.sst";
+  ASSERT_OK(sfw_default.Open(cf_default_sst));
+  ASSERT_OK(sfw_default.Put("K1", "V1"));
+  ASSERT_OK(sfw_default.Put("K2", "V2"));
+  ASSERT_OK(sfw_default.Finish());
+
+  // cf1.sst
+  const std::string cf1_sst = sst_files_dir_ + "/cf1.sst";
+  ASSERT_OK(sfw_cf1.Open(cf1_sst));
+  ASSERT_OK(sfw_cf1.Put("K3", "V1"));
+  ASSERT_OK(sfw_cf1.Put("K4", "V2"));
+  ASSERT_OK(sfw_cf1.Finish());
+
+  // cf_unknown.sst
+  const std::string unknown_sst = sst_files_dir_ + "/cf_unknown.sst";
+  ASSERT_OK(sfw_unknown.Open(unknown_sst));
+  ASSERT_OK(sfw_unknown.Put("K5", "V1"));
+  ASSERT_OK(sfw_unknown.Put("K6", "V2"));
+  ASSERT_OK(sfw_unknown.Finish());
+
+  std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec;
+  custom_ingest_metadata_vec.push_back(
+      CustomIngSSTFileMetaData(cf1_sst, 0, 10, 19));
+
+  ASSERT_OK(DeprecatedAddFile(handles_[2], &custom_ingest_metadata_vec, false));
+  ASSERT_EQ(Get(2, "K3"), "V1");
+  ASSERT_EQ(Get(2, "K4"), "V2");
+
+  ASSERT_OK(DeprecatedAddFile(handles_[1], &custom_ingest_metadata_vec, false));
+  ASSERT_EQ(Get(1, "K3"), "V1");
+  ASSERT_EQ(Get(1, "K4"), "V2");
+
+}
+
+TEST_F(ExternalSSTFileTest, IngestExportedSSTFromAnotherCF) {
+  Options options = CurrentOptions();
+  CreateAndReopenWithCF({"koko", "toto"}, options);
+
+  for (int i = 0; i < 100; ++i) {
+    Put(1, Key(i), Key(i) + "_val");
+  }
+
+  // Overwrite to update sequence numbers.
+  for (int i = 0; i < 100; ++i) {
+    Put(1, Key(i), Key(i) + "_overwrite");
+  }
+
+  ASSERT_OK(Flush());
+  ASSERT_OK(
+      db_->CompactRange(CompactRangeOptions(), handles_[1], nullptr, nullptr));
+  db_->DisableFileDeletions();
+
+  std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec;
+  ColumnFamilyMetaData cf_metadata;
+  db_->GetColumnFamilyMetaData(handles_[1], &cf_metadata);
+  fprintf(stderr, "cf_metadata %s %lu %lu\n", cf_metadata.name.c_str(),
+          cf_metadata.file_count, cf_metadata.size);
+
+  for (const auto& level_metadata : cf_metadata.levels) {
+    for (const auto& sst_metadata : level_metadata.files) {
+      custom_ingest_metadata_vec.push_back(
+          CustomIngSSTFileMetaData(sst_metadata.db_path + sst_metadata.name,
+                                   level_metadata.level,
+                                   sst_metadata.smallest_seqno,
+                                   sst_metadata.largest_seqno));
+    }
+  }
+  ASSERT_OK(DeprecatedAddFile(handles_[2], &custom_ingest_metadata_vec, false));
+
+  db_->EnableFileDeletions();
+  for (int i = 0; i < 100; ++i) {
+    ASSERT_EQ(Get(1, Key(i)), Get(2, Key(i)));
+  }
 }
 
 #if 0
@@ -1753,67 +1870,6 @@ TEST_F(ExternalSSTFileTest, DirtyExit) {
   sst_file_writer.reset(new SstFileWriter(EnvOptions(), options));
   ASSERT_OK(sst_file_writer->Open(file_path));
   ASSERT_NOK(sst_file_writer->Finish());
-}
-
-TEST_F(ExternalSSTFileTest, FileWithCFInfo) {
-  Options options = CurrentOptions();
-  CreateAndReopenWithCF({"koko", "toto"}, options);
-
-  SstFileWriter sfw_default(EnvOptions(), options, handles_[0]);
-  SstFileWriter sfw_cf1(EnvOptions(), options, handles_[1]);
-  SstFileWriter sfw_cf2(EnvOptions(), options, handles_[2]);
-  SstFileWriter sfw_unknown(EnvOptions(), options);
-
-  // default_cf.sst
-  const std::string cf_default_sst = sst_files_dir_ + "/default_cf.sst";
-  ASSERT_OK(sfw_default.Open(cf_default_sst));
-  ASSERT_OK(sfw_default.Put("K1", "V1"));
-  ASSERT_OK(sfw_default.Put("K2", "V2"));
-  ASSERT_OK(sfw_default.Finish());
-
-  // cf1.sst
-  const std::string cf1_sst = sst_files_dir_ + "/cf1.sst";
-  ASSERT_OK(sfw_cf1.Open(cf1_sst));
-  ASSERT_OK(sfw_cf1.Put("K3", "V1"));
-  ASSERT_OK(sfw_cf1.Put("K4", "V2"));
-  ASSERT_OK(sfw_cf1.Finish());
-
-  // cf_unknown.sst
-  const std::string unknown_sst = sst_files_dir_ + "/cf_unknown.sst";
-  ASSERT_OK(sfw_unknown.Open(unknown_sst));
-  ASSERT_OK(sfw_unknown.Put("K5", "V1"));
-  ASSERT_OK(sfw_unknown.Put("K6", "V2"));
-  ASSERT_OK(sfw_unknown.Finish());
-
-  IngestExternalFileOptions ifo;
-
-  // SST CF dont match
-  ASSERT_NOK(db_->IngestExternalFile(handles_[0], {cf1_sst}, ifo));
-  // SST CF dont match
-  ASSERT_NOK(db_->IngestExternalFile(handles_[2], {cf1_sst}, ifo));
-  // SST CF match
-  ASSERT_OK(db_->IngestExternalFile(handles_[1], {cf1_sst}, ifo));
-
-  // SST CF dont match
-  ASSERT_NOK(db_->IngestExternalFile(handles_[1], {cf_default_sst}, ifo));
-  // SST CF dont match
-  ASSERT_NOK(db_->IngestExternalFile(handles_[2], {cf_default_sst}, ifo));
-  // SST CF match
-  ASSERT_OK(db_->IngestExternalFile(handles_[0], {cf_default_sst}, ifo));
-
-  // SST CF unknown
-  ASSERT_OK(db_->IngestExternalFile(handles_[1], {unknown_sst}, ifo));
-  // SST CF unknown
-  ASSERT_OK(db_->IngestExternalFile(handles_[2], {unknown_sst}, ifo));
-  // SST CF unknown
-  ASSERT_OK(db_->IngestExternalFile(handles_[0], {unknown_sst}, ifo));
-
-  // Cannot ingest a file into a dropped CF
-  ASSERT_OK(db_->DropColumnFamily(handles_[1]));
-  ASSERT_NOK(db_->IngestExternalFile(handles_[1], {unknown_sst}, ifo));
-
-  // CF was not dropped, ok to Ingest
-  ASSERT_OK(db_->IngestExternalFile(handles_[2], {unknown_sst}, ifo));
 }
 
 class TestIngestExternalFileListener : public EventListener {
