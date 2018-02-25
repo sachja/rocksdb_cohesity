@@ -20,6 +20,8 @@
 #include "port/port.h"
 #include "rocksdb/db.h"
 #include "rocksdb/env.h"
+#include "rocksdb/table_properties.h"
+#include "tools/sst_dump_tool_imp.h"
 #include "util/file_util.h"
 #include "util/filename.h"
 #include "util/mutexlock.h"
@@ -37,6 +39,29 @@ Status DBImpl::DisableFileDeletions() {
                    "File Deletions Disabled, but already disabled. Counter: %d",
                    disable_delete_obsolete_files_);
   }
+  return Status::OK();
+}
+
+Status DBImpl::DisableFileDeletionsOnCF(uint32_t cfId) {
+  InstrumentedMutexLock l(&mutex_);
+  int disable_counter = 0;
+  if (disable_delete_cf_obsolete_files_map_.find(cfId) != 
+    disable_delete_cf_obsolete_files_map_.end()) {
+    disable_counter = 
+      disable_delete_cf_obsolete_files_map_[cfId];
+  }
+  disable_counter += 1;
+
+  if (disable_counter == 1) {
+    ROCKS_LOG_INFO(immutable_db_options_.info_log,
+     "File Deletions Disabled for ColumnFamilyId: %d", cfId);
+  } else {
+    ROCKS_LOG_WARN(immutable_db_options_.info_log,
+      "File Deletions Disabled, but already disabled on ColumnFamilyId: %d. Counter: %d",
+     cfId, disable_counter);
+  }
+
+  disable_delete_cf_obsolete_files_map_[cfId] = disable_counter;
   return Status::OK();
 }
 
@@ -73,8 +98,77 @@ Status DBImpl::EnableFileDeletions(bool force) {
   return Status::OK();
 }
 
+Status DBImpl::EnableFileDeletionsOnCF(uint32_t cfId, bool force) {
+  // Job id == 0 means that this is not our background process, but rather
+  // user thread
+  JobContext job_context(0);
+  int disable_counter = 0;
+
+  bool should_purge_files = false;
+  {
+    InstrumentedMutexLock l(&mutex_);
+    if (disable_delete_cf_obsolete_files_map_.find(cfId) !=
+        disable_delete_cf_obsolete_files_map_.end()) {
+      disable_counter = disable_delete_cf_obsolete_files_map_[cfId];
+    }
+    if (force) {
+      // if force, we need to enable file deletions right away
+      disable_counter = 0;
+    } else if (disable_counter > 0) {
+      --disable_counter;
+    }
+    if (disable_counter == 0)  {
+      ROCKS_LOG_INFO(immutable_db_options_.info_log,
+        "File Deletions Enabled on ColumnFamilyId: %d", cfId);
+      should_purge_files = true;
+      FindObsoleteFiles(&job_context, true);
+      bg_cv_.SignalAll();
+    } else {
+      ROCKS_LOG_WARN(
+          immutable_db_options_.info_log,
+          "File Deletions Enable, but not really enabled on ColumnFamilyId: %d. Counter: %d",
+          cfId, disable_counter);
+    }
+    disable_delete_cf_obsolete_files_map_[cfId] = disable_counter;
+  }
+  if (should_purge_files)  {
+    PurgeObsoleteFiles(job_context);
+  }
+  job_context.Clean();
+  LogFlush(immutable_db_options_.info_log);
+  return Status::OK();
+}
+
 int DBImpl::IsFileDeletionsEnabled() const {
   return disable_delete_obsolete_files_;
+}
+
+bool DBImpl::IsFileDeletionsDisabledOnCF(std::string fname) {
+  SstFileReader reader(fname, false, false);
+  if(!reader.getStatus().ok()) {
+    ROCKS_LOG_WARN(
+      immutable_db_options_.info_log,"Filename:%s: %s",
+      reader.getStatus().ToString().c_str());
+    return false;
+  }
+  const TableProperties* table_properties;
+  std::shared_ptr<const TableProperties> table_properties_from_reader;
+  Status st = reader.ReadTableProperties(&table_properties_from_reader);
+  if (!st.ok()) {
+    table_properties = reader.GetInitTableProperties();
+  } else {
+    table_properties = table_properties_from_reader.get();
+  }
+  if (table_properties == nullptr)
+    return false;
+
+  if(disable_delete_cf_obsolete_files_map_.find(
+    table_properties->column_family_id) != disable_delete_cf_obsolete_files_map_.end()){
+    if (disable_delete_cf_obsolete_files_map_[table_properties->column_family_id] > 0) {
+      return true;
+    }
+  }
+  return false;
 }
 
 Status DBImpl::GetLiveFiles(std::vector<std::string>& ret,

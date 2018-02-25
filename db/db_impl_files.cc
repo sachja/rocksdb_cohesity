@@ -432,8 +432,10 @@ void DBImpl::PurgeObsoleteFiles(const JobContext& state, bool schedule_only) {
       case kTableFile:
         // If the second condition is not there, this makes
         // DontDeletePendingOutputs fail
+        // Don't delete if FileDeletionsDisabled on this Column Family.
         keep = (sst_live_map.find(number) != sst_live_map.end()) ||
-               number >= state.min_pending_output;
+               number >= state.min_pending_output ||
+               IsFileDeletionsDisabledOnCF(candidate_file.file_name);
         break;
       case kTempFile:
         // Any temp files that are currently being written to must

@@ -296,6 +296,18 @@ class StackableDB : public DB {
     return db_->EnableFileDeletions(force);
   }
 
+  virtual Status DisableFileDeletionsOnCF(uint32_t cfId) {
+    return db_->DisableFileDeletionsOnCF(cfId);
+  }
+
+  virtual Status EnableFileDeletionsOnCF(uint32_t cfId, bool force) {
+    return db_->EnableFileDeletionsOnCF(cfId, force);
+  }
+
+  virtual bool IsFileDeletionsDisabledOnCF(std::string fname) {
+    return db_->IsFileDeletionsDisabledOnCF(fname);
+  }
+
   virtual void GetLiveFilesMetaData(
       std::vector<LiveFileMetaData>* metadata) override {
     db_->GetLiveFilesMetaData(metadata);

@@ -234,8 +234,11 @@ class DBImpl : public DB {
   using DB::ResetStats;
   virtual Status ResetStats() override;
   virtual Status DisableFileDeletions() override;
+  virtual Status DisableFileDeletionsOnCF(uint32_t cfId) override;
   virtual Status EnableFileDeletions(bool force) override;
+  virtual Status EnableFileDeletionsOnCF(uint32_t cfId, bool force) override;
   virtual int IsFileDeletionsEnabled() const;
+  virtual bool IsFileDeletionsDisabledOnCF(std::string fname) override; 
   // All the returned filenames start with "/"
   virtual Status GetLiveFiles(std::vector<std::string>&,
                               uint64_t* manifest_file_size,
@@ -1234,6 +1237,11 @@ class DBImpl : public DB {
   // EnableFileDeletions() and DisableFileDeletions()
   // without any synchronization
   int disable_delete_obsolete_files_;
+
+  // Same as above, but for each column family.
+  // Map to check if disable delete obsolete files
+  // is requested for a columnFamily.
+  std::unordered_map<uint32_t, int> disable_delete_cf_obsolete_files_map_;
 
   // Number of times FindObsoleteFiles has found deletable files and the
   // corresponding call to PurgeObsoleteFiles has not yet finished.

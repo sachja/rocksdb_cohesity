@@ -905,6 +905,9 @@ class DB {
   // times have the same effect as calling it once.
   virtual Status DisableFileDeletions() = 0;
 
+  // Same as above but prevents file deletions for this column family.
+  virtual Status DisableFileDeletionsOnCF(uint32_t cfId) = 0;
+
   // Allow compactions to delete obsolete files.
   // If force == true, the call to EnableFileDeletions() will guarantee that
   // file deletions are enabled after the call, even if DisableFileDeletions()
@@ -915,6 +918,11 @@ class DB {
   // synchronization -- i.e., file deletions will be enabled only after both
   // threads call EnableFileDeletions()
   virtual Status EnableFileDeletions(bool force = true) = 0;
+
+  // Same as above, but enables deletions per column family.
+  virtual Status EnableFileDeletionsOnCF(uint32_t cfId, bool force) = 0;
+  
+  virtual bool IsFileDeletionsDisabledOnCF(std::string fname) = 0;
 
   // GetLiveFiles followed by GetSortedWalFiles can generate a lossless backup
 
