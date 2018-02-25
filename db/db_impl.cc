@@ -2760,6 +2760,13 @@ Status DBImpl::GetLatestSequenceForKey(SuperVersion* sv, const Slice& key,
   return Status::OK();
 }
 
+namespace {
+bool CompareIngFileOnSeqNum(const rocksdb::CustomIngSSTFileMetaData& lhs,
+      const rocksdb::CustomIngSSTFileMetaData& rhs) {
+  return lhs.smallest_seqnum < rhs.smallest_seqnum;
+}
+}
+
 Status DBImpl::IngestExternalFile(
     ColumnFamilyHandle* column_family,
     const std::vector<std::string>& external_files,
@@ -2776,6 +2783,17 @@ Status DBImpl::IngestExternalFile(
       return Status::InvalidArgument(
         "Can't ingest_behind file in DB with allow_ingest_behind=false");
     }
+  }
+  
+  std::vector<CustomIngSSTFileMetaData> custom_ingest_copy;
+  if (custom_ingest != nullptr) {
+    // Copy custom_ingest vector and
+    // Sort incoming files based on smallest_seqnum.
+    for(auto& file : *custom_ingest) {
+      custom_ingest_copy.push_back(file);
+    }
+    std::sort(custom_ingest_copy.begin(), custom_ingest_copy.end(), CompareIngFileOnSeqNum);
+    custom_ingest = &custom_ingest_copy;
   }
 
   ExternalSstFileIngestionJob ingestion_job(

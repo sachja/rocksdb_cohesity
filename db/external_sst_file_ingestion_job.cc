@@ -162,7 +162,7 @@ Status ExternalSstFileIngestionJob::Run() {
   bool consumed_seqno = false;
   bool force_global_seqno = false;
 
-  // TODO(sharath): Custom ingestion do not hit this. (No snapshots)
+  // TODO(sharath): Custom ingestion should get sequence num.(No snapshots)
   if (ingestion_options_.snapshot_consistency && !db_snapshots_->empty()) {
     // We need to assign a global sequence number to all the files even
     // if the dont overlap with any ranges since we have snapshots
@@ -180,28 +180,32 @@ Status ExternalSstFileIngestionJob::Run() {
     fMetaData = custom_ingest_->begin();
 
   for (IngestedFileInfo& f : files_to_ingest_) {
-    // Skip assigning seqnum and level for custom ingestion.
-    if (!custom_ingest_) {
-      SequenceNumber assigned_seqno = 0;
-      if (ingestion_options_.ingest_behind) {
-        status = CheckLevelForIngestedBehindFile(&f);
-      } else {
-        status = AssignLevelAndSeqnoForIngestedFile(
-           super_version, force_global_seqno, cfd_->ioptions()->compaction_style,
-           &f, &assigned_seqno);
-      }
-      if (!status.ok()) {
-        return status;
-      }
-      status = AssignGlobalSeqnoForIngestedFile(&f, assigned_seqno);
-      TEST_SYNC_POINT_CALLBACK("ExternalSstFileIngestionJob::Run",
-                               &assigned_seqno);
-      if (assigned_seqno == last_seqno + 1) {
-        consumed_seqno = true;
-      }
-      if (!status.ok()) {
-        return status;
-      }
+    SequenceNumber assigned_seqno = 0;
+    if (custom_ingest_) {
+      // Set force_global_seqno, in order for custom ingestion to get
+      // sequence number using LastSeq() in AssignLevelAndSeqnoForIngestedFile().
+      force_global_seqno = true;
+    }
+    if (ingestion_options_.ingest_behind) {
+      status = CheckLevelForIngestedBehindFile(&f);
+    } else {
+      status = AssignLevelAndSeqnoForIngestedFile(
+         super_version, force_global_seqno, cfd_->ioptions()->compaction_style,
+         &f, &assigned_seqno);
+    }
+    if (!status.ok()) {
+      return status;
+    }
+    status = AssignGlobalSeqnoForIngestedFile(&f, assigned_seqno);
+    TEST_SYNC_POINT_CALLBACK("ExternalSstFileIngestionJob::Run",
+                             &assigned_seqno);
+    if (assigned_seqno == last_seqno + 1) {
+      consumed_seqno = true;
+    }
+    if (!status.ok()) {
+      return status;
+    }
+    if(!custom_ingest_) {
       edit_.AddFile(f.picked_level, f.fd.GetNumber(), f.fd.GetPathId(),
                     f.fd.GetFileSize(), f.smallest_internal_key(),
                     f.largest_internal_key(), f.assigned_seqno, f.assigned_seqno,
@@ -209,8 +213,8 @@ Status ExternalSstFileIngestionJob::Run() {
     } else {
       edit_.AddFile(fMetaData->level, f.fd.GetNumber(), f.fd.GetPathId(),
                     f.fd.GetFileSize(), f.smallest_internal_key(),
-                    f.largest_internal_key(), fMetaData->smallest_seqnum,
-                    fMetaData->largest_seqnum, false);
+                    f.largest_internal_key(), f.assigned_seqno,
+                    f.assigned_seqno, false);
       fMetaData++;
     }
   }
