@@ -170,7 +170,7 @@ Status ExternalSstFileIngestionJob::Run() {
   }
   // It is safe to use this instead of LastAllocatedSequence since we are
   // the only active writer, and hence they are equal
-  const SequenceNumber last_seqno = versions_->LastSequence();
+  SequenceNumber last_seqno = versions_->LastSequence();
   SuperVersion* super_version = cfd_->GetSuperVersion();
   edit_.SetColumnFamily(cfd_->GetID());
   // The levels that the files will be ingested into
@@ -182,19 +182,20 @@ Status ExternalSstFileIngestionJob::Run() {
   for (IngestedFileInfo& f : files_to_ingest_) {
     SequenceNumber assigned_seqno = 0;
     if (custom_ingest_) {
-      // Set force_global_seqno, in order for custom ingestion to get
-      // sequence number using LastSeq() in AssignLevelAndSeqnoForIngestedFile().
-      force_global_seqno = true;
-    }
-    if (ingestion_options_.ingest_behind) {
-      status = CheckLevelForIngestedBehindFile(&f);
+      // Increment the last sequence and use it for each file ingestion.
+      last_seqno++;
+      assigned_seqno = last_seqno;
     } else {
-      status = AssignLevelAndSeqnoForIngestedFile(
-         super_version, force_global_seqno, cfd_->ioptions()->compaction_style,
-         &f, &assigned_seqno);
-    }
-    if (!status.ok()) {
-      return status;
+      if (ingestion_options_.ingest_behind) {
+        status = CheckLevelForIngestedBehindFile(&f);
+      } else {
+        status = AssignLevelAndSeqnoForIngestedFile(
+           super_version, force_global_seqno, cfd_->ioptions()->compaction_style,
+           &f, &assigned_seqno);
+      }
+      if (!status.ok()) {
+        return status;
+      }
     }
     status = AssignGlobalSeqnoForIngestedFile(&f, assigned_seqno);
     TEST_SYNC_POINT_CALLBACK("ExternalSstFileIngestionJob::Run",
@@ -219,7 +220,7 @@ Status ExternalSstFileIngestionJob::Run() {
     }
   }
 
-  if (consumed_seqno) {
+  if (custom_ingest_ || consumed_seqno) {
     versions_->SetLastAllocatedSequence(last_seqno + 1);
     versions_->SetLastPublishedSequence(last_seqno + 1);
     versions_->SetLastSequence(last_seqno + 1);
