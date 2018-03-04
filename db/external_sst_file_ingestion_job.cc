@@ -211,6 +211,11 @@ Status ExternalSstFileIngestionJob::Run() {
                     f.fd.GetFileSize(), f.smallest_internal_key(),
                     f.largest_internal_key(), fMetaData->smallest_seqnum,
                     fMetaData->largest_seqnum, false);
+      if (fMetaData->largest_seqnum > versions_->LastSequence()) {
+	 versions_->SetLastAllocatedSequence(fMetaData->largest_seqnum);
+	 versions_->SetLastPublishedSequence(fMetaData->largest_seqnum);
+	 versions_->SetLastSequence(fMetaData->largest_seqnum);
+      }
       fMetaData++;
     }
   }
