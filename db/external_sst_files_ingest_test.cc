@@ -480,15 +480,24 @@ TEST_F(ExternalSSTFileTest, IngestExportedSSTFromAnotherCF) {
   for (int i = 0; i < 100; ++i) {
     Put(1, Key(i), Key(i) + "_val");
   }
-
-  // Overwrite to update sequence numbers.
+  ASSERT_OK(Flush(1));
+  // Compact to create a L1 file.
+  ASSERT_OK(
+      db_->CompactRange(CompactRangeOptions(), handles_[1], nullptr, nullptr));
+  // Overwrite the value in the same set of keys.
   for (int i = 0; i < 100; ++i) {
     Put(1, Key(i), Key(i) + "_overwrite");
   }
 
-  ASSERT_OK(Flush());
-  ASSERT_OK(
-      db_->CompactRange(CompactRangeOptions(), handles_[1], nullptr, nullptr));
+  // Flush to create L0 file.
+  ASSERT_OK(Flush(1));
+  for (int i = 0; i < 100; ++i) {
+    Put(1, Key(i), Key(i) + "_overwrite2");
+  }
+  
+  // Flush again to create another L0 file. It should have higher sequencer.
+  ASSERT_OK(Flush(1));
+
   db_->DisableFileDeletions();
 
   std::vector<CustomIngSSTFileMetaData> custom_ingest_metadata_vec;
@@ -499,6 +508,10 @@ TEST_F(ExternalSSTFileTest, IngestExportedSSTFromAnotherCF) {
 
   for (const auto& level_metadata : cf_metadata.levels) {
     for (const auto& sst_metadata : level_metadata.files) {
+      fprintf(stderr, "sst file %s %d %lu %lu\n",  sst_metadata.name.c_str(),
+	      level_metadata.level,
+	      sst_metadata.smallest_seqno,
+	      sst_metadata.largest_seqno);
       custom_ingest_metadata_vec.push_back(
           CustomIngSSTFileMetaData(sst_metadata.db_path + sst_metadata.name,
                                    level_metadata.level,
@@ -507,11 +520,19 @@ TEST_F(ExternalSSTFileTest, IngestExportedSSTFromAnotherCF) {
     }
   }
   ASSERT_OK(DeprecatedAddFile(handles_[2], &custom_ingest_metadata_vec, false));
+  CreateColumnFamilies({"yoyo"}, options);
+  
+  ASSERT_OK(DeprecatedAddFile(handles_[3], &custom_ingest_metadata_vec, false));
 
   db_->EnableFileDeletions();
   for (int i = 0; i < 100; ++i) {
     ASSERT_EQ(Get(1, Key(i)), Get(2, Key(i)));
+    ASSERT_EQ(Get(1, Key(i)), Get(3, Key(i)));
   }
+
+  // TODO : Add test where sst files of the CF is migrated to a different DB 
+  // which is empty. This was not returning the keys in the new DB before we 
+  // made the fix for updating LastSequenceNumber.
 }
 
 #if 0
